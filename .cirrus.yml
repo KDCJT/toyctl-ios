@@ -1,0 +1,21 @@
+# Cirrus CI — 免费 OSS 云端 macOS 编译(GitHub Actions 对免费账号不开放 macOS 机器)
+# 在 cirrus-ci.com 用 GitHub 登录并启用本仓库后, 本文件自动生效。
+# 构建产物: 未签名 ToyCtl-unsigned.ipa, 在任务页 Artifacts 下载。
+
+macos_instance:
+  image: ghcr.io/cirruslabs/macos-sonoma-xcode:15.2
+
+task:
+  name: Build unsigned ipa
+  script:
+    - brew install xcodegen
+    - xcodegen generate
+    - xcodebuild -project ToyCtl.xcodeproj -scheme ToyCtl -configuration Release
+      -destination 'generic/platform=iOS' -derivedDataPath build
+      CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build
+    - mkdir -p Payload
+    - cp -r build/Build/Products/Release-iphoneos/ToyCtl.app Payload/
+    - zip -qry ToyCtl-unsigned.ipa Payload
+  artifacts:
+    paths:
+      - "ToyCtl-unsigned.ipa"

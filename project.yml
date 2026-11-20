@@ -14,6 +14,8 @@ targets:
       path: ToyCtl/Info.plist
       properties:
         NSBluetoothAlwaysUsageDescription: 连接并控制 ToyCtl 设备
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

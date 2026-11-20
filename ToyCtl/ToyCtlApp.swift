@@ -3,6 +3,7 @@
 
 import SwiftUI
 import CoreBluetooth
+import WebKit
 
 let SVC_UUID = CBUUID(string: "B0B0C0DE-F00D-4A11-B1E5-5EED00000001")
 let CMD_UUID = CBUUID(string: "B0B0C0DE-F00D-4A11-B1E5-5EED00000002")
@@ -235,6 +236,7 @@ struct ContentView: View {
                     ToysCard(bt: bt)
                     RawCard(bt: bt)
                     RfCard(bt: bt)
+                    WebConsoleCard()
                     WifiCard(bt: bt)
                     LogCard(bt: bt)
                 }
@@ -279,6 +281,13 @@ struct BcastCard: View {
     @ObservedObject var bt: BT
     @State private var rawPrefix = ""
     @State private var rawCmd = ""
+    @State private var siyuMotor = 1
+    @State private var siyuDir = 1
+    @State private var siyuLevel = 0
+
+    private func sendSiyu() {
+        bt.send(["t": "siyu", "motor": siyuMotor, "dir": siyuDir, "speed": siyuLevel])
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -330,7 +339,27 @@ struct BcastCard: View {
             }
 
             if bt.fam == "siyu" || bt.fam == "omni" {
-                SiyuQuick(bt: bt)
+                HStack {
+                    Picker("马达", selection: $siyuMotor) {
+                        Text("马达1").tag(1); Text("马达2").tag(2)
+                    }
+                    .pickerStyle(.segmented).frame(width: 150)
+                    .onChange(of: siyuMotor) { _ in sendSiyu() }
+                    Picker("方向", selection: $siyuDir) {
+                        Text("停").tag(0); Text("正转").tag(1); Text("反向").tag(2)
+                    }
+                    .pickerStyle(.segmented).frame(width: 170)
+                    .onChange(of: siyuDir) { _ in sendSiyu() }
+                }
+                HStack {
+                    Slider(value: Binding(get: { Double(siyuLevel) },
+                                          set: { v in siyuLevel = Int(v) }),
+                           in: 0...10, step: 1,
+                           onEditingChanged: { e in if !e { sendSiyu() } })
+                    Text(siyuLevel == 0 ? "停" : "速\(siyuLevel)")
+                        .frame(width: 34).foregroundColor(.pink)
+                }
+                Text("马达映射因型号而异(1=振动/旋转, 2=吸吮等), 两个都试试。").font(.caption2).foregroundColor(.gray)
             }
         }
         .padding().background(cardBg()).cornerRadius(12)
@@ -486,6 +515,43 @@ struct RfCard: View {
             .padding().background(cardBg()).cornerRadius(12)
         }
     }
+}
+
+struct WebConsoleCard: View {
+    @State private var urlText = "http://192.168.4.1"
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("🌐 网页控制台(全功能)").font(.headline)
+            Text("需手机连上 ESP32 热点 ToyCtl-xxx 或同一路由器; 蓝牙直连模式下网页不可达。")
+                .font(.caption).foregroundColor(.gray)
+            HStack {
+                TextField("URL", text: $urlText)
+                    .font(.system(.footnote, design: .monospaced))
+                    .textFieldStyle(.roundedBorder)
+                Button(open ? "收起" : "打开") { open.toggle() }.font(.footnote)
+            }
+            if open {
+                WebView(url: URL(string: urlText) ?? URL(string: "http://192.168.4.1")!)
+                    .frame(height: 460)
+                    .border(Color.gray.opacity(0.3))
+            }
+        }
+        .padding().background(cardBg()).cornerRadius(12)
+    }
+}
+
+struct WebView: UIViewRepresentable {
+    let url: URL
+
+    func makeUIView(context: Context) -> WKWebView {
+        let wv = WKWebView()
+        wv.load(URLRequest(url: url))
+        return wv
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
 }
 
 struct WifiCard: View {

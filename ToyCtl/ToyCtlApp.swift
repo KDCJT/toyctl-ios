@@ -47,6 +47,22 @@ final class BT: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripher
         peri?.writeValue(d, for: ch, type: .withResponse)
     }
 
+    func updateToy(_ addr: String, vib: Int? = nil, rot: Int? = nil) {
+        toys = toys.map { t in
+            Toy(addr: t.addr, name: t.name, proto: t.proto, vib: vib ?? t.vib, rot: rot ?? t.rot)
+        }
+    }
+
+    func sendToyVib(_ addr: String) {
+        let cur = toys.first { $0.addr == addr }?.vib ?? 0
+        send(["t": "cmd", "addr": addr, "vib": cur, "rot": -1])
+    }
+
+    func sendToyRot(_ addr: String) {
+        let cur = toys.first { $0.addr == addr }?.rot ?? 0
+        send(["t": "cmd", "addr": addr, "vib": -1, "rot": cur])
+    }
+
     // MARK: CBCentralManagerDelegate
     func centralManagerDidUpdateState(_ c: CBCentralManager) { ready = (c.state == .poweredOn) }
 
@@ -198,8 +214,8 @@ struct ContentView: View {
                 HStack {
                     Slider(value: Binding(get: { Double(bt.museLevel) },
                                           set: { v in bt.museLevel = Int(v) }),
-                           onEditingChanged: { e in if !e { bt.send(["t": "muse", "level": bt.museLevel, "ch": bt.museCh]) } },
-                           in: 0...9, step: 1)
+                           in: 0...9, step: 1,
+                           onEditingChanged: { e in if !e { bt.send(["t": "muse", "level": bt.museLevel, "ch": bt.museCh]) } })
                     Text(bt.museLevel == 0 ? "停" : "\(bt.museLevel)")
                         .frame(width: 28).foregroundColor(.pink)
                 }
@@ -238,30 +254,14 @@ struct ContentView: View {
                             .font(.caption)
                     }
                     Slider(value: Binding(get: { Double(t.vib) },
-                                          set: { v in
-                                              let i = Int(v)
-                                              bt.toys = bt.toys.map { $0.addr == t.addr ? Toy(addr: t.addr, name: t.name, proto: t.proto, vib: i, rot: t.rot) : $0 }
-                                          }),
-                           onEditingChanged: { e in
-                               if !e {
-                                   let cur = bt.toys.first { $0.addr == t.addr }?.vib ?? 0
-                                   bt.send(["t": "cmd", "addr": t.addr, "vib": cur, "rot": -1])
-                               }
-                           },
-                           in: 0...100)
+                                          set: { v in bt.updateToy(t.addr, vib: Int(v)) }),
+                           in: 0...100,
+                           onEditingChanged: { e in if !e { bt.sendToyVib(t.addr) } })
                     if t.proto == 1 || t.proto == 4 || t.proto == 10 {
                         Slider(value: Binding(get: { Double(t.rot) },
-                                              set: { v in
-                                                  let i = Int(v)
-                                                  bt.toys = bt.toys.map { $0.addr == t.addr ? Toy(addr: t.addr, name: t.name, proto: t.proto, vib: t.vib, rot: i) : $0 }
-                                              }),
-                               onEditingChanged: { e in
-                                   if !e {
-                                       let cur = bt.toys.first { $0.addr == t.addr }?.rot ?? 0
-                                       bt.send(["t": "cmd", "addr": t.addr, "vib": -1, "rot": cur])
-                                   }
-                               },
-                               in: 0...100)
+                                              set: { v in bt.updateToy(t.addr, rot: Int(v)) }),
+                               in: 0...100,
+                               onEditingChanged: { e in if !e { bt.sendToyRot(t.addr) } })
                     }
                 }
                 .padding(8).background(Color(.tertiarySystemBackground)).cornerRadius(8)

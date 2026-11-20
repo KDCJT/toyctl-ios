@@ -50,6 +50,7 @@ final class BT: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripher
     @Published var rfHasFrame = false
     @Published var rfEdges = 0
     @Published var logs: [String] = []
+    @Published var toast: String?
 
     private var central: CBCentralManager!
     private var peri: CBPeripheral?
@@ -61,15 +62,33 @@ final class BT: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripher
 
     // MARK: 操作
     func startScan() {
-        guard central.state == .poweredOn else { return }
+        guard central.state == .poweredOn else { showToast("蓝牙未开启/未授权"); return }
         scanning = true
         central.scanForPeripherals(withServices: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            guard let self = self, self.scanning else { return }
+            self.scanning = false
+            self.central.stopScan()
+            self.showToast("8 秒未发现 ToyCtl —— 确认 ESP32 通电并靠近重试")
+        }
     }
     func stopScan() { central.stopScan(); scanning = false }
     func disconnect() { if let p = peri { central.cancelPeripheralConnection(p) } }
 
+    func showToast(_ s: String) {
+        pushLog(s)
+        toast = s
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            if self?.toast == s { self?.toast = nil }
+        }
+    }
+
     func send(_ cmd: [String: Any]) {
-        guard let ch = cmdChar, connected, let d = try? JSONSerialization.data(withJSONObject: cmd) else { return }
+        guard let ch = cmdChar, connected else {
+            showToast("⚠ 未连接 ToyCtl(蓝牙), 指令未执行")
+            return
+        }
+        guard let d = try? JSONSerialization.data(withJSONObject: cmd) else { return }
         peri?.writeValue(d, for: ch, type: .withResponse)
     }
 
@@ -229,6 +248,11 @@ struct ContentView: View {
         NavigationView {
             ScrollView {
                 VStack(spacing: 12) {
+                    if let t = bt.toast {
+                        Text(t).font(.footnote).foregroundColor(.white)
+                            .padding(8).frame(maxWidth: .infinity)
+                            .background(Color.red).cornerRadius(8)
+                    }
                     ConnCard(bt: bt)
                     BcastCard(bt: bt)
                     RadarCard(bt: bt)
@@ -407,6 +431,8 @@ struct ScanCard: View {
                 Spacer()
                 Button("扫描") { bt.send(["t": "scan"]) }.font(.footnote)
             }
+            Text("需先在上方蓝牙连接 ToyCtl, 点扫描后约 5 秒出结果; 扫描期间广播短暂变弱。")
+                .font(.caption2).foregroundColor(.gray)
             ForEach(bt.scanResults) { e in
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {

@@ -3,7 +3,7 @@ name: ToyCtl
 options:
   bundleIdPrefix: com.toyctl
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "15.0"
 targets:
   ToyCtl:
     type: application

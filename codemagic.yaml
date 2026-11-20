@@ -1,0 +1,31 @@
+# Codemagic — 免费云端 macOS 编译(500 分钟/月, 免费档不需信用卡)
+# 用法: codemagic.io → GitHub 账号登录 → Add application 选 toyctl-ios 仓库
+#       → 选 workflow "ios-unsigned" → Start build → 构建完成后在页面上下载 ipa
+
+workflows:
+  ios-unsigned:
+    name: Build unsigned ipa
+    max_build_duration: 20
+    environment:
+      xcode: latest
+      groups: []
+    scripts:
+      - name: Generate Xcode project
+        script: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Build unsigned .app
+        script: |
+          xcodebuild -project ToyCtl.xcodeproj -scheme ToyCtl \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build
+      - name: Package unsigned ipa
+        script: |
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/ToyCtl.app Payload/
+          zip -qry ToyCtl-unsigned.ipa Payload
+    artifacts:
+      - ToyCtl-unsigned.ipa
+    publishing:
+      email: false

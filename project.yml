@@ -1,0 +1,19 @@
+# XcodeGen 工程描述 — GitHub Actions 上自动生成 .xcodeproj
+name: ToyCtl
+options:
+  bundleIdPrefix: com.toyctl
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  ToyCtl:
+    type: application
+    platform: iOS
+    sources:
+      - ToyCtl
+    info:
+      path: ToyCtl/Info.plist
+      properties:
+        NSBluetoothAlwaysUsageDescription: 连接并控制 ToyCtl 设备
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait

@@ -1,8 +1,5 @@
-// ToyCtl iOS — 通过蓝牙直连 ESP32 的原生控制端
-// 需要 Mac + Xcode (iOS 16+) 编译运行; 通讯协议与网页版完全一致(JSON over BLE)。
-//
-// 连接方式: 扫描名为 "ToyCtl" 的设备 → 连接 → 订阅 OUT 特征 → 写 CMD 特征。
-// OUT 数据采用分帧协议: [0x01][seqId][seqIdx][seqTotal][payload...] (应对 MTU 分片)。
+// ToyCtl iOS — 功能对齐版(与网页控制台能力一致)
+// JSON over BLE, 分帧协议: [0x01][seqId][seqIdx][seqTotal][payload...]
 
 import SwiftUI
 import CoreBluetooth
@@ -16,14 +13,41 @@ struct Toy: Identifiable {
     var id: String { addr }
 }
 
+struct ScanItem: Identifiable {
+    let addr: String; let name: String; let rssi: Int; let proto: Int; let mfg: String
+    var id: String { addr }
+}
+
+struct SvcItem: Identifiable {
+    let s: String; let u: String; let w: Int; let n: Int
+    var id: String { s + u }
+}
+
+func protoName(_ p: Int) -> String {
+    let names = ["未知", "Lovense", "通用", "MuSe连接型", "SiYu连接型", "Galaku", "Wetoy",
+                 "MonsterPub", "Pretty Love", "TryFun", "Magic Motion", "MizzZee", "Youcups",
+                 "Meese", "喜宝", "Ankni", "Svakom", "Hgod", "JoyHub", "Patoo"]
+    if p >= 0 && p < names.count { return names[p] }
+    return "?"
+}
+
 final class BT: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     @Published var ready = false
     @Published var connected = false
     @Published var scanning = false
     @Published var toys: [Toy] = []
+    @Published var scanResults: [ScanItem] = []
+    @Published var services: [SvcItem] = []
     @Published var museLevel = 0
     @Published var museCh = 0
     @Published var fam = "muse"
+    @Published var prefixText = ""
+    @Published var radarOn = false
+    @Published var radarAc = false
+    @Published var rfEnabled = false
+    @Published var rfCapturing = false
+    @Published var rfHasFrame = false
+    @Published var rfEdges = 0
     @Published var logs: [String] = []
 
     private var central: CBCentralManager!
@@ -34,7 +58,7 @@ final class BT: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripher
 
     override init() { super.init(); central = CBCentralManager(delegate: self, queue: nil) }
 
-    // MARK: 对外操作
+    // MARK: 操作
     func startScan() {
         guard central.state == .poweredOn else { return }
         scanning = true
@@ -42,6 +66,7 @@ final class BT: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripher
     }
     func stopScan() { central.stopScan(); scanning = false }
     func disconnect() { if let p = peri { central.cancelPeripheralConnection(p) } }
+
     func send(_ cmd: [String: Any]) {
         guard let ch = cmdChar, connected, let d = try? JSONSerialization.data(withJSONObject: cmd) else { return }
         peri?.writeValue(d, for: ch, type: .withResponse)
@@ -62,6 +87,18 @@ final class BT: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripher
         let cur = toys.first { $0.addr == addr }?.rot ?? 0
         send(["t": "cmd", "addr": addr, "vib": -1, "rot": cur])
     }
+
+    func savePrefixes(_ list: [String]) { send(["t": "muse_prefixes", "list": list]) }
+    func museRaw(_ prefix: String, _ cmd: String) { send(["t": "muse_raw", "prefix": prefix, "cmd": cmd]) }
+    func setRadar(_ on: Bool, _ ac: Bool) { send(["t": "radar", "on": on, "autoconnect": ac]) }
+    func rf(_ action: String) { send(["t": "rf433", "a": action]) }
+    func requestServices(_ addr: String) { send(["t": "services", "addr": addr]) }
+    func rawWrite(_ addr: String, _ cuuid: String, _ hex: String, _ wresp: Bool) {
+        send(["t": "raw", "addr": addr, "cuuid": cuuid, "hex": hex, "wresp": wresp])
+    }
+    func saveWifi(_ ssid: String, _ pass: String) { send(["t": "wifi", "ssid": ssid, "pass": pass]) }
+    func connectDevice(_ addr: String) { send(["t": "connect", "addr": addr]) }
+    func disconnectDevice(_ addr: String) { send(["t": "disconnect", "addr": addr]) }
 
     // MARK: CBCentralManagerDelegate
     func centralManagerDidUpdateState(_ c: CBCentralManager) { ready = (c.state == .poweredOn) }
@@ -97,8 +134,6 @@ final class BT: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripher
         connected = true
         send(["t": "hello"])
     }
-
-    func peripheral(_ p: CBPeripheral, didUpdateNotificationStateFor ch: CBCharacteristic, error: Error?) {}
 
     func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
         guard ch.uuid == OUT_UUID, let d = ch.value, d.count >= 4, d[0] == 1 else { return }
@@ -140,6 +175,36 @@ final class BT: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripher
                 museLevel = mu["level"] as? Int ?? 0
                 museCh = mu["ch"] as? Int ?? 0
                 fam = mu["family"] as? String ?? "muse"
+                if let pl = mu["prefixes"] as? [String] { prefixText = pl.joined(separator: "\n") }
+            }
+            if let rd = m["radar"] as? [String: Any] {
+                radarOn = (rd["on"] as? Bool) ?? false
+                radarAc = (rd["ac"] as? Bool) ?? false
+            }
+            if let rf = m["rf433"] as? [String: Any] {
+                rfEnabled = (rf["enabled"] as? Bool) ?? false
+                rfCapturing = (rf["capturing"] as? Bool) ?? false
+                rfHasFrame = (rf["hasFrame"] as? Bool) ?? false
+                rfEdges = rf["edges"] as? Int ?? 0
+            }
+        case "scandone":
+            if let list = m["list"] as? [[String: Any]] {
+                scanResults = list.map {
+                    ScanItem(addr: $0["addr"] as? String ?? "",
+                             name: $0["name"] as? String ?? "",
+                             rssi: $0["rssi"] as? Int ?? 0,
+                             proto: $0["proto"] as? Int ?? 0,
+                             mfg: $0["mfg"] as? String ?? "")
+                }
+                pushLog("扫描完成: \(scanResults.count) 台设备")
+            }
+        case "services":
+            if let list = m["list"] as? [[String: Any]] {
+                services = list.map {
+                    SvcItem(s: $0["s"] as? String ?? "", u: $0["u"] as? String ?? "",
+                            w: $0["w"] as? Int ?? 0, n: $0["n"] as? Int ?? 0)
+                }
+                pushLog("读取到 \(services.count) 个特征")
             }
         case "log":
             pushLog("· " + (m["msg"] as? String ?? ""))
@@ -162,16 +227,31 @@ struct ContentView: View {
     var body: some View {
         NavigationView {
             ScrollView {
-                VStack(spacing: 12) { connCard; bcastCard; toysCard; logCard }
-                    .padding(.horizontal)
+                VStack(spacing: 12) {
+                    ConnCard(bt: bt)
+                    BcastCard(bt: bt)
+                    RadarCard(bt: bt)
+                    ScanCard(bt: bt)
+                    ToysCard(bt: bt)
+                    RawCard(bt: bt)
+                    RfCard(bt: bt)
+                    WifiCard(bt: bt)
+                    LogCard(bt: bt)
+                }
+                .padding(.horizontal)
             }
             .navigationTitle("ToyCtl")
             .navigationBarTitleDisplayMode(.inline)
         }
         .onAppear { if bt.ready && !bt.connected && !bt.scanning { bt.startScan() } }
     }
+}
 
-    private var connCard: some View {
+private func cardBg() -> some View { Color(.secondarySystemBackground) }
+
+struct ConnCard: View {
+    @ObservedObject var bt: BT
+    var body: some View {
         VStack(spacing: 8) {
             HStack {
                 Circle().fill(bt.connected ? Color.green : Color.red).frame(width: 10, height: 10)
@@ -191,12 +271,18 @@ struct ContentView: View {
             }
             .background(Color.red).cornerRadius(10)
         }
-        .padding().background(Color(.secondarySystemBackground)).cornerRadius(12)
+        .padding().background(cardBg()).cornerRadius(12)
     }
+}
 
-    private var bcastCard: some View {
+struct BcastCard: View {
+    @ObservedObject var bt: BT
+    @State private var rawPrefix = ""
+    @State private var rawCmd = ""
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("📡 广播控制").font(.headline)
+            Text("📡 广播控制(无连接 · 一对多)").font(.headline)
             Picker("家族", selection: $bt.fam) {
                 Text("暮瑟").tag("muse")
                 Text("SiYu(姬欲)").tag("siyu")
@@ -221,37 +307,111 @@ struct ContentView: View {
                 }
                 Button("MuSe 停止广播") { bt.send(["t": "muse", "level": 0, "ch": bt.museCh]) }
                     .font(.footnote)
+                Text("前缀(每行一个):").font(.caption).foregroundColor(.gray)
+                TextEditor(text: $bt.prefixText)
+                    .font(.system(.footnote, design: .monospaced))
+                    .frame(height: 60)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.gray.opacity(0.4)))
+                Button("保存前缀") {
+                    let list = bt.prefixText
+                        .components(separatedBy: CharacterSet.newlines.union(.whitespaces))
+                        .filter { $0.count == 16 }
+                    bt.savePrefixes(list)
+                }
+                .font(.footnote)
+                HStack {
+                    TextField("前缀", text: $rawPrefix)
+                        .font(.system(.footnote, design: .monospaced))
+                    TextField("命令", text: $rawCmd)
+                        .font(.system(.footnote, design: .monospaced))
+                        .frame(width: 70)
+                    Button("发送") { bt.museRaw(rawPrefix, rawCmd) }.font(.footnote)
+                }
             }
 
             if bt.fam == "siyu" || bt.fam == "omni" {
-                Text("SiYu 控制在网页版更完整; App 端快控:").font(.caption).foregroundColor(.gray)
-                HStack {
-                    Button("SiYu 停") { bt.send(["t": "siyu", "motor": 1, "dir": 0, "speed": 0]) }
-                        .font(.footnote)
-                    Spacer()
-                    ForEach(1...3, id: \.self) { v in
-                        Button("速\(v)") { bt.send(["t": "siyu", "motor": 1, "dir": 1, "speed": v]) }
-                            .font(.footnote)
-                    }
-                }
+                SiyuQuick(bt: bt)
             }
         }
-        .padding().background(Color(.secondarySystemBackground)).cornerRadius(12)
+        .padding().background(cardBg()).cornerRadius(12)
     }
+}
 
-    private var toysCard: some View {
+struct SiyuQuick: View {
+    @ObservedObject var bt: BT
+    var body: some View {
+        HStack {
+            Button("SiYu 停") { bt.send(["t": "siyu", "motor": 1, "dir": 0, "speed": 0]) }
+                .font(.footnote)
+            Spacer()
+            ForEach(1...3, id: \.self) { v in
+                Button("速\(v)") { bt.send(["t": "siyu", "motor": 1, "dir": 1, "speed": v]) }
+                    .font(.footnote)
+            }
+        }
+    }
+}
+
+struct RadarCard: View {
+    @ObservedObject var bt: BT
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("🛰 已连接玩具").font(.headline)
+            Text("🎯 玩具雷达").font(.headline)
+            Toggle("雷达模式(周期扫描)", isOn: Binding(
+                get: { bt.radarOn },
+                set: { v in bt.radarOn = v; bt.setRadar(v, bt.radarAc) }))
+            Toggle("自动连接已知玩具", isOn: Binding(
+                get: { bt.radarAc },
+                set: { v in bt.radarAc = v; bt.setRadar(bt.radarOn, v) }))
+            Text("GATT 型玩具自动发现; 纯广播型只听不发射, 用广播面板控制。").font(.caption).foregroundColor(.gray)
+        }
+        .padding().background(cardBg()).cornerRadius(12)
+    }
+}
+
+struct ScanCard: View {
+    @ObservedObject var bt: BT
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("🛰 BLE 设备").font(.headline)
+                Spacer()
+                Button("扫描") { bt.send(["t": "scan"]) }.font(.footnote)
+            }
+            ForEach(bt.scanResults) { e in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(e.name.isEmpty ? "(未命名)" : e.name).font(.subheadline)
+                        Text("\(e.addr) · \(e.rssi)dBm").font(.caption2).foregroundColor(.gray)
+                    }
+                    Spacer()
+                    Text(protoName(e.proto)).font(.caption2).foregroundColor(.blue)
+                    Button("连接") { bt.connectDevice(e.addr) }.font(.caption2)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .padding().background(cardBg()).cornerRadius(12)
+    }
+}
+
+struct ToysCard: View {
+    @ObservedObject var bt: BT
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("🔗 已连接玩具").font(.headline)
             if bt.toys.isEmpty {
-                Text("(无 — 在 ESP32 网页端开启雷达或手动连接)").font(.caption).foregroundColor(.gray)
+                Text("(无)").font(.caption).foregroundColor(.gray)
             }
             ForEach(bt.toys) { t in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text(t.name.isEmpty ? t.addr : t.name).font(.subheadline)
+                        Text(protoName(t.proto)).font(.caption2).foregroundColor(.blue)
                         Spacer()
+                        Button("断开") { bt.disconnectDevice(t.addr) }.font(.caption2)
                         Button("停") { bt.send(["t": "cmd", "addr": t.addr, "vib": 0, "rot": 0]) }
-                            .font(.caption)
+                            .font(.caption2)
                     }
                     Slider(value: Binding(get: { Double(t.vib) },
                                           set: { v in bt.updateToy(t.addr, vib: Int(v)) }),
@@ -267,16 +427,94 @@ struct ContentView: View {
                 .padding(8).background(Color(.tertiarySystemBackground)).cornerRadius(8)
             }
         }
-        .padding().background(Color(.secondarySystemBackground)).cornerRadius(12)
+        .padding().background(cardBg()).cornerRadius(12)
     }
+}
 
-    private var logCard: some View {
+struct RawCard: View {
+    @ObservedObject var bt: BT
+    @State private var hex = ""
+    @State private var wresp = false
+    @State private var selAddr = ""
+    @State private var selChar = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("🧪 原始 GATT 测试器").font(.headline)
+            Picker("设备", selection: $selAddr) {
+                if bt.toys.isEmpty { Text("(无)").tag("") }
+                ForEach(bt.toys) { t in
+                    Text(t.name.isEmpty ? t.addr : t.name).tag(t.addr)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            Button("读取服务") { bt.requestServices(selAddr) }.font(.footnote)
+            Picker("特征", selection: $selChar) {
+                if bt.services.isEmpty { Text("(未读取)").tag("") }
+                ForEach(bt.services) { s in
+                    Text("\(String(s.s.prefix(8))) → \(s.u) [\((s.w == 1 ? "可写" : "") + (s.n == 1 ? "通知" : ""))]")
+                        .tag(s.u)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            HStack {
+                TextField("HEX 如 AA55", text: $hex)
+                    .font(.system(.footnote, design: .monospaced))
+                Toggle("带响应", isOn: $wresp).font(.caption)
+                Button("写入") { bt.rawWrite(selAddr, selChar, hex, wresp) }.font(.footnote)
+            }
+            Text("未知玩具: 连接 → 读取服务 → 选可写特征 → 试 00-FF / AA55 等字节").font(.caption2).foregroundColor(.gray)
+        }
+        .padding().background(cardBg()).cornerRadius(12)
+    }
+}
+
+struct RfCard: View {
+    @ObservedObject var bt: BT
+    var body: some View {
+        if bt.rfEnabled {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("📻 433MHz 抓取/重放").font(.headline)
+                HStack {
+                    Button("捕获") { bt.rf("cap") }.font(.footnote)
+                    Button("重放×3") { bt.rf("send") }.font(.footnote)
+                    Button("清除") { bt.rf("clear") }.font(.footnote)
+                }
+                Text("状态: \(bt.rfCapturing ? "捕获中…" : "空闲") · 抓到帧: \(bt.rfHasFrame ? "是" : "否") · 边沿: \(bt.rfEdges)")
+                    .font(.caption).foregroundColor(.gray)
+            }
+            .padding().background(cardBg()).cornerRadius(12)
+        }
+    }
+}
+
+struct WifiCard: View {
+    @ObservedObject var bt: BT
+    @State private var ssid = ""
+    @State private var pass = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("📶 WiFi(可选)").font(.headline)
+            HStack {
+                TextField("SSID", text: $ssid)
+                SecureField("密码", text: $pass)
+                Button("保存") { bt.saveWifi(ssid, pass) }.font(.footnote)
+            }
+        }
+        .padding().background(cardBg()).cornerRadius(12)
+    }
+}
+
+struct LogCard: View {
+    @ObservedObject var bt: BT
+    var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("📜 日志").font(.headline)
             ForEach(bt.logs.prefix(20), id: \.self) {
                 Text($0).font(.caption2).foregroundColor(.gray)
             }
         }
-        .padding().background(Color(.secondarySystemBackground)).cornerRadius(12)
+        .padding().background(cardBg()).cornerRadius(12)
     }
 }

@@ -27,5 +27,3 @@ workflows:
           zip -qry ToyCtl-unsigned.ipa Payload
     artifacts:
       - ToyCtl-unsigned.ipa
-    publishing:
-      email: false
